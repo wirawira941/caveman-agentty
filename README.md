@@ -19,6 +19,10 @@ cd caveman-agentty
 pkg install proot python curl
 npm i -g @caveman-ai/cli && caveman setup --install
 
+# agentty ships a non-PIE binary Android 11 refuses to run; start fixes that
+# too, but if `agentty` errors with "unexpected e_type: 2" run it manually:
+#   sh bin/fix-agentty-pie.sh
+
 # start it, wire agentty, install the boot hook
 sh bin/caveman-agentty.sh start
 
@@ -86,26 +90,57 @@ lookup api.openai.com on [::1]:53: read udp [::1]:53: connection refused
 `resolv.conf` is the only thing that fixes it. The control script does this
 for you.
 
+## The agentty binary does not launch
+
+On Android 11 (and later), the loader refuses non-PIE ELF:
+
+```
+error: ".../agentty.bin" has unexpected e_type: 2
+```
+
+`e_type: 2` is `ET_EXEC`; Android only accepts `ET_DYN` (PIE). The agentty
+0.9.13-2 package ships a *static* `ET_EXEC` binary, so it cannot start.
+
+The same `.deb` also contains a correctly built PIE image (NDK r30, dynamic)
+under `data/`. `bin/fix-agentty-pie.sh` downloads the package, extracts that
+image, verifies it is `ET_DYN`, and installs it over the broken one. The
+original is backed up to `agentty.bin.nonpie-bak`.
+
+```sh
+sh bin/fix-agentty-pie.sh
+```
+
+It is idempotent and caches the extracted binary in
+`~/.caveman-agentty/agentty-fix/`, so re-running after a package upgrade that
+reverts the fix works offline. `caveman-agentty start` and `test` run it
+automatically.
+
+The tell-tale is in `/proc/<pid>/maps` of a *working* session: the file shows
+as `(deleted)` because the process is still running the old PIE build while the
+on-disk binary was replaced by the broken one.
+
 ## What the self-test checks
 
 `sh bin/caveman-agentty.sh test` needs no provider key and verifies each link:
 
 1. `proot` is installed
 2. `caveman-proxy` answers on `:8787`
-3. the proxy has working DNS (it reaches a real upstream host)
-4. the bridge is live on `:8790`
-5. the bridge forwards upstream (a bogus key → a genuine 4xx from Atria)
-6. the request was measured (`x-cave-request-id` present)
-7. agentty's provider points at the bridge
-8. requests are accumulating in `caveman.db`
+3. agentty itself launches (catches the non-PIE regression)
+4. the proxy has working DNS (it reaches a real upstream host)
+5. the bridge is live on `:8790`
+6. the bridge forwards upstream (a bogus key → a genuine 4xx from Atria)
+7. the request was measured (`x-cave-request-id` present)
+8. agentty's provider points at the bridge
+9. requests are accumulating in `caveman.db`
 
-Check 3 is the regression test for the Termux DNS problem; if it fails with a
+Check 4 is the regression test for the Termux DNS problem; if it fails with a
 502 the proot bind is no longer in effect.
 
 ## Files
 
 | path | role |
 | --- | --- |
+| `bin/fix-agentty-pie.sh` | repairs the non-PIE agentty binary |
 | `bin/atria-bridge.py` | OpenAI-compat bridge; agentty's provider target |
 | `bin/caveman-agentty.sh` | control script (start/stop/status/test) |
 | `test/verify.sh` | self-test |

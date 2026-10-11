@@ -149,6 +149,35 @@ print("agentty      wired " + str(old) + " -> " + target + "  (backup: " + bak +
 PYEOF
 }
 
+# --- agentty env ---------------------------------------------------------------
+# agentty rewrites settings.json on every startup and clobbers any provider
+# edit, so the durable wiring is an env var read from .bashrc instead.
+install_env_var() {
+  BASHRC="$HOME_DIR/.bashrc"
+  MARKER="# caveman-agentty bridge"
+  LINE="export AGENTTY_API_HOST=\"http://127.0.0.1:$BRIDGE_PORT\""
+
+  [ -f "$BASHRC" ] || touch "$BASHRC"
+  if grep -qF "$MARKER" "$BASHRC" 2>/dev/null; then
+    # keep the line current if the port changed
+    python3 - "$BASHRC" "$LINE" "$MARKER" <<'PYEOF'
+import sys
+path, line, marker = sys.argv[1], sys.argv[2], sys.argv[3]
+src = open(path).read().splitlines()
+out = [line if marker in s and s.lstrip().startswith("export AGENTTY_API_HOST")
+       else s for s in src]
+open(path, "w").write("\n".join(out) + "\n")
+PYEOF
+    log "env var       AGENTTY_API_HOST already set"
+    return 0
+  fi
+
+  printf '\n%s\nexport AGENTTY_API_HOST="http://127.0.0.1:%s"\n' \
+    "$MARKER" "$BRIDGE_PORT" >> "$BASHRC"
+  log "env var       AGENTTY_API_HOST set in $BASHRC"
+  log "                open a new shell (or: source ~/.bashrc) for it to take effect"
+}
+
 # --- boot hook ---------------------------------------------------------------
 install_boot() {
   d="$(dirname "$BOOT_HOOK")"
@@ -165,9 +194,14 @@ EOF
 
 # --- commands ----------------------------------------------------------------
 cmd_start() {
+  # agentty ships a non-PIE binary that Android 11 refuses to execute; repair
+  # it first so the stack has something to talk to.
+  sh "$SELF_DIR/bin/fix-agentty-pie.sh" || log "warning: agentty PIE fix skipped"
+
   start_proxy
   start_bridge
   wire_agentty
+  install_env_var
   install_boot
   log ""
   log "chain:  agentty -> bridge :$BRIDGE_PORT -> proxy :$PROXY_PORT -> Atria"
@@ -201,7 +235,10 @@ cmd_logs() {
   done
 }
 
-cmd_test() { sh "$SELF_DIR/test/verify.sh"; }
+cmd_test() {
+  sh "$SELF_DIR/bin/fix-agentty-pie.sh" >/dev/null 2>&1 || true
+  sh "$SELF_DIR/test/verify.sh"
+}
 
 case "${1:-help}" in
   start)   cmd_start ;;

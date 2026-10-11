@@ -32,6 +32,15 @@ bad()  { printf '  \033[31mfail\033[0m  %s\n' "$1"; FAIL=$((FAIL+1)); }
 info() { printf '         %s\n' "$1"; }
 
 get() { timeout 10 curl -s -o "$2" -w '%{http_code}' "$1" 2>/dev/null || echo 000; }
+
+# 0. agentty itself launches (a non-PIE build dies with e_type: 2 on Android 11)
+if timeout 10 /data/data/com.termux/files/usr/bin/agentty --version >/dev/null 2>&1; then
+  ok "agentty launches ($(timeout 10 /data/data/com.termux/files/usr/bin/agentty --version 2>&1 | head -1))"
+else
+  bad "agentty does not launch (non-PIE binary)"
+  info "fix: sh $SELF_DIR/bin/fix-agentty-pie.sh"
+fi
+
 post() { timeout 12 curl -s -o "$3" -D "$4" -w '%{http_code}' -X POST \
            -H "Content-Type: application/json" -H "Authorization: Bearer [REDACTED]" \
            -d "$2" "$1" 2>/dev/null || echo 000; }
@@ -109,10 +118,16 @@ fi
 # 5. agentty wired
 if [ -f "$AGENTTY_SETTINGS" ]; then
   cur=$(python3 -c "
-import json,sys
-try: print(json.load(open('$AGENTTY_SETTINGS')).get('provider'))
-except Exception: print('unreadable')
-" 2>/dev/null)
+import json, os, sys
+settings = sys.argv[1]
+env = os.environ.get('AGENTTY_API_HOST', '').rstrip('/')
+if not env.endswith('/v1'):
+    env += '/v1'
+# The env var wins: agentty rewrites settings.json on startup and clobbers
+# any provider edit, so the settings file alone is not authoritative.
+print(env if os.environ.get('AGENTTY_API_HOST') else
+      json.load(open(settings)).get('provider'))
+" "$AGENTTY_SETTINGS" 2>/dev/null)
   want="http://127.0.0.1:$BRIDGE_PORT/v1"
   if [ "$cur" = "$want" ]; then
     ok "agentty provider -> bridge ($want)"
